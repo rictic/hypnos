@@ -1,0 +1,15 @@
+[package]
+name = "hypnos"
+version = "0.1.0"
+authors = ["rictic <me@rictic.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serenity = { version = "0.10.2", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
+tokio = { version = "1.0.2", features = ["macros", "rt-multi-thread", "sync"] }
+chrono = "0.4.19"
+chrono-english = "0.1.4"
+chrono-tz = "0.5.3"
+futures = "0.3.12"
