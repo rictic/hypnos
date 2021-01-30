@@ -435,6 +435,8 @@ dependencies = [
  "chrono-english",
  "chrono-tz",
  "futures",
+ "serde",
+ "serde_json",
  "serenity",
  "tokio",
 ]

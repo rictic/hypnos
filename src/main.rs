@@ -1,13 +1,7 @@
-use futures::future::FutureExt;
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    env,
-    fmt::Display,
-    sync::Arc,
-};
-
 use chrono::{DateTime, Duration, Local};
 use chrono_english::{parse_date_string, Dialect};
+use futures::future::FutureExt;
+use serde::{Deserialize, Serialize};
 use serenity::{
     async_trait,
     builder::ParseValue,
@@ -20,8 +14,16 @@ use serenity::{
     },
     prelude::*,
 };
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    env,
+    error::Error,
+    fmt::Display,
+    sync::Arc,
+};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+#[derive(Serialize, Deserialize, Clone)]
 struct GetTogether {
     message: MessageId,
     channel: ChannelId,
@@ -59,6 +61,35 @@ impl Display for GetTogether {
             f.write_str("Reply to this message like `title: Overwatch` or `time: 8pm friday` or `description: ...` to set up this event!")?;
         }
         Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SerializableHandlerData {
+    get_togethers: BTreeMap<String, GetTogether>,
+}
+impl SerializableHandlerData {
+    fn from_get_togethers(get_togethers: &BTreeMap<MessageId, GetTogether>) -> Self {
+        Self {
+            get_togethers: get_togethers
+                .iter()
+                .map(|(key, value)| (key.as_u64().to_string(), value.clone()))
+                .collect(),
+        }
+    }
+
+    fn into_handler(self) -> Handler {
+        let get_togethers = self
+            .get_togethers
+            .into_iter()
+            .map(|(key, value)| (MessageId::from(key.parse::<u64>().unwrap()), value))
+            .collect();
+        let (sender, receiver) = unbounded_channel();
+        Handler {
+            get_togethers: Arc::new(RwLock::new(get_togethers)),
+            notify_time_change: Arc::new(Mutex::new(sender)),
+            time_changed: Arc::new(Mutex::new(receiver)),
+        }
     }
 }
 
@@ -129,6 +160,32 @@ impl Handler {
             return Some(Err(format!("I'm confused you know. Try starting your message with `title:` or `description:` or `time:`")));
         }
     }
+
+    // TODO: move serialization into a green thread that's notified when
+    //     state is mutated.
+    async fn serialize_state(state: SerializableHandlerData) -> Result<(), Box<dyn Error>> {
+        {
+            let file = std::fs::File::create("data_writing.json")?;
+            serde_json::to_writer_pretty(file, &state)?;
+        }
+        tokio::fs::rename("data_writing.json", "data.json").await?;
+        Ok(())
+    }
+
+    async fn deserialize() -> Result<Option<Handler>, Box<dyn Error>> {
+        let file = match std::fs::File::open("data.json") {
+            Ok(file) => file,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    println!("data.json doesn't exist, starting fresh");
+                    return Ok(None);
+                }
+                _ => return Err(e.into()),
+            },
+        };
+        let read: SerializableHandlerData = serde_json::from_reader(file)?;
+        Ok(Some(read.into_handler()))
+    }
 }
 
 #[async_trait]
@@ -150,6 +207,7 @@ impl EventHandler for Handler {
         if msg.content == "!event" {
             match msg.channel_id.say(&ctx.http, "New Event! Reply to this message with `time: 7:30pm` to set the time. Likewise for the title and description.").await {
                 Ok(pong) => {
+                let serializable = {
                     let mut msgs = self.get_togethers.write().await;
                     msgs.insert(pong.id, GetTogether {
                         message: pong.id,
@@ -159,6 +217,12 @@ impl EventHandler for Handler {
                         time: None,
                         notified: false
                     });
+                    SerializableHandlerData::from_get_togethers(&msgs)
+                };
+
+                    if let Err(why) = Self::serialize_state(serializable).await {
+                        println!("failed to serialize! {}", why);
+                    }
                 }
                 Err(why) => {
                     println!("Error sending message: {:?}", why);
@@ -229,6 +293,11 @@ impl EventHandler for Handler {
                     }
                 }
             };
+            let get_togethers = self.get_togethers.read().await;
+            let state = SerializableHandlerData::from_get_togethers(&get_togethers);
+            if let Err(why) = Self::serialize_state(state).await {
+                println!("failed to serialize! {}", why);
+            }
         }
     }
 
@@ -324,6 +393,11 @@ impl EventHandler for Handler {
                         get_togethers.remove(&mid);
                     }
 
+                    let state = SerializableHandlerData::from_get_togethers(&get_togethers);
+                    if let Err(why) = Self::serialize_state(state).await {
+                        println!("failed to serialize! {}", why);
+                    }
+
                     println!("Sleeping for {}", sleep_time);
                     sleep_time.to_std().unwrap() // safe because it's limited size
                 };
@@ -362,15 +436,19 @@ fn pretty_print_duration(mut dur: Duration) -> String {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+
+    let handler = Handler::deserialize()
+        .await?
+        .unwrap_or_else(|| Handler::new());
 
     // Create a new instance of the Client, logging in as a bot. This will
     // automatically prepend your bot token with "Bot ", which is a requirement
     // by Discord for bot users.
     let mut client = Client::builder(&token)
-        .event_handler(Handler::new())
+        .event_handler(handler)
         .await
         .expect("Err creating client");
 
@@ -381,4 +459,5 @@ async fn main() {
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
+    Ok(())
 }
