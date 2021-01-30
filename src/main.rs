@@ -344,23 +344,21 @@ impl EventHandler for Handler {
                                 .await;
 
                             let to_notify: HashSet<User> = match (yes_reactions, maybe_reactions) {
-                                (Ok(yes), Ok(maybe)) => {
-                                    println!("{:#?}", (&yes, &maybe));
-                                    yes.into_iter()
-                                        .chain(maybe.into_iter())
-                                        .filter(|r| r.name != "hypnos")
-                                        .collect()
-                                }
+                                (Ok(yes), Ok(maybe)) => yes
+                                    .into_iter()
+                                    .chain(maybe.into_iter())
+                                    .filter(|r| r.name != "hypnos")
+                                    .collect(),
                                 _ => {
                                     println!("Failed to get reactions!!");
                                     g.notified = true; // assume it's a permanent error :/
+                                    to_remove.insert(g.message);
                                     continue;
                                 }
                             };
                             if let Err(why) = g
                                 .channel
                                 .send_message(ctx.http.clone(), |m| {
-                                    println!("{:#?}", to_notify);
                                     m.allowed_mentions(|am| am.parse(ParseValue::Users));
                                     m.content(format!(
                                         "It's time! {}",
@@ -376,12 +374,12 @@ impl EventHandler for Handler {
                             {
                                 println!("Failed to send notification message! {}", why);
                                 g.notified = true; // assume it's a permanent error :/
+                                to_remove.insert(g.message);
                                 continue;
                             }
 
-                            g.notified = true; // assume it's a permanent error :/
-                                               // g.event_message
-                                               // the event passed, notify people!!!
+                            g.notified = true;
+                            to_remove.insert(g.message);
                             continue;
                         }
                         let dur = time - now;
