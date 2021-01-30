@@ -10,11 +10,12 @@ use chrono::{DateTime, Duration, Local};
 use chrono_english::{parse_date_string, Dialect};
 use serenity::{
     async_trait,
+    builder::ParseValue,
     futures::future::select_all,
     model::{
-        channel::{Message, Reaction, ReactionType},
+        channel::{Message, ReactionType},
         gateway::Ready,
-        id::{ChannelId, GuildId, MessageId, UserId},
+        id::{ChannelId, GuildId, MessageId},
         prelude::{Activity, User},
     },
     prelude::*,
@@ -27,7 +28,6 @@ struct GetTogether {
     title: String,
     time: Option<DateTime<Local>>,
     description: String,
-    coming: BTreeSet<UserId>,
     notified: bool,
 }
 
@@ -145,7 +145,7 @@ impl EventHandler for Handler {
     // events can be dispatched simultaneously.
     async fn message(&self, ctx: Context, mut msg: Message) {
         if msg.author.name == "hypnos" {
-            return; // always self messages
+            return; // always ignore self messages
         }
         if msg.content == "!event" {
             match msg.channel_id.say(&ctx.http, "New Event! Reply to this message with `time: 7:30pm` to set the time. Likewise for the title and description.").await {
@@ -157,7 +157,6 @@ impl EventHandler for Handler {
                         title: "".to_string(),
                         description: "".to_string(),
                         time: None,
-                        coming: BTreeSet::new(),
                         notified: false
                     });
                 }
@@ -233,44 +232,6 @@ impl EventHandler for Handler {
         }
     }
 
-    /// Dispatched when a new reaction is attached to a message.
-    ///
-    /// Provides the reaction's data.
-    async fn reaction_add(&self, _ctx: Context, add_reaction: Reaction) {
-        {
-            let msgs = self.get_togethers.read().await;
-            if !msgs.contains_key(&add_reaction.message_id) {
-                return;
-            }
-        }
-        let mut msgs = self.get_togethers.write().await;
-        let get_together = match msgs.get_mut(&add_reaction.message_id) {
-            Some(get_together) => get_together,
-            None => return,
-        };
-        if let Some(user_id) = add_reaction.user_id {
-            get_together.coming.insert(user_id);
-        }
-        add_reaction.message_id;
-    }
-
-    /// Dispatched when a reaction is detached from a message.
-    ///
-    /// Provides the reaction's data.
-    async fn reaction_remove(&self, _ctx: Context, _removed_reaction: Reaction) {
-        // let msgs = self.monitored_msgs.read().await;
-        // if !msgs.contains(&removed_reaction.message_id) {
-        //     return;
-        // }
-        // if let Err(why) = removed_reaction
-        //     .channel_id
-        //     .say(&ctx.http, "why'd you take it away D:")
-        //     .await
-        // {
-        //     println!("Error sending message: {:?}", why);
-        // }
-    }
-
     async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
         let get_togethers = self.get_togethers.clone();
         let time_changed = self.time_changed.clone();
@@ -331,12 +292,12 @@ impl EventHandler for Handler {
                                 .channel
                                 .send_message(ctx.http.clone(), |m| {
                                     println!("{:#?}", to_notify);
-                                    m.allowed_mentions(|f| f.users(to_notify.clone()));
+                                    m.allowed_mentions(|am| am.parse(ParseValue::Users));
                                     m.content(format!(
                                         "It's time! {}",
                                         to_notify
                                             .into_iter()
-                                            .map(|r| format!("@{} ", r.name))
+                                            .map(|r| format!("<@!{}>", r.id.as_u64()))
                                             .collect::<String>(),
                                     ));
                                     m.reference_message((g.channel, g.message));
