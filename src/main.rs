@@ -4,7 +4,7 @@ use futures::future::FutureExt;
 use serde::{Deserialize, Serialize};
 use serenity::{
     async_trait,
-    builder::ParseValue,
+    builder::{CreateEmbed, CreateMessage, EditMessage, ParseValue},
     futures::future::select_all,
     model::{
         channel::{Message, ReactionType},
@@ -18,7 +18,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     env,
     error::Error,
-    fmt::Display,
     sync::Arc,
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -34,33 +33,56 @@ struct GetTogether {
 }
 
 impl GetTogether {
+    fn blank() -> Self {
+        Self {
+            message: MessageId::from(0),
+            channel: ChannelId::from(0),
+            title: "".to_string(),
+            time: None,
+            description: "".to_string(),
+            notified: false,
+        }
+    }
+
     fn is_initialized(&self) -> bool {
         !(self.time.is_none() || (self.title.is_empty() && self.description.is_empty()))
     }
-}
 
-impl Display for GetTogether {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if !self.title.is_empty() {
-            f.write_fmt(format_args!("**{}**\n\n", self.title))?;
-        }
-        if !self.description.is_empty() {
-            f.write_fmt(format_args!("{}\n\n", self.description))?;
-        }
-        match self.time {
-            Some(time) => {
-                f.write_fmt(format_args!("On {}\n\n", time.format("%a %b %e %-I:%M%P")))?;
-            }
-            None => {
-                f.write_str("**time not yet specified**\n\n")?;
-            }
-        }
-        if self.is_initialized() {
-            f.write_str("Give a :white_check_mark: if you're in, a :grey_question: if it's more maybe. I'll be sure to give you a ping either way when it's time.")?;
+    fn create_message(&self, m: &mut CreateMessage) {
+        m.embed(|e| {
+            self.embed(e);
+            e
+        });
+    }
+
+    fn edit_message(&self, m: &mut EditMessage) {
+        m.embed(|e| {
+            self.embed(e);
+            e
+        });
+    }
+
+    fn embed(&self, e: &mut CreateEmbed) {
+        e.title(if self.title.is_empty() {
+            "title goes here lol"
         } else {
-            f.write_str("Reply to this message like `title: Overwatch` or `time: 8pm friday` or `description: ...` to set up this event!")?;
-        }
-        Ok(())
+            &self.title
+        });
+        e.description(&self.description);
+        e.footer(|f| {
+            f.text(if self.is_initialized() {
+                "Give a ✅ if you're in, a ❔ if it's more maybe. I'll be sure to give you a ping either way when it's time"
+            } else {
+                "Reply to this message like `title: Overwatch` or `time: 8pm friday` or `description: ...` to set up this event!"
+            })
+        });
+        let time = match self.time {
+            Some(time) => {
+                format!("{}", time.format("%a %b %e %-I:%M%P"))
+            }
+            None => "Who knows man".to_string(),
+        };
+        e.field("When", time, false);
     }
 }
 
@@ -118,7 +140,7 @@ impl Handler {
         &self,
         msg_content: &str,
         replying_to_id: MessageId,
-    ) -> Option<Result<(String, Reply, bool), String>> {
+    ) -> Option<Result<(GetTogether, Reply, bool), String>> {
         let mut msgs = self.get_togethers.write().await;
         let get_together = match msgs.get_mut(&replying_to_id) {
             Some(get_together) => get_together,
@@ -127,14 +149,14 @@ impl Handler {
         if let Some(new_title) = msg_content.strip_prefix("title: ") {
             get_together.title = new_title.trim().to_string();
             return Some(Ok((
-                format!("{}", get_together),
+                get_together.clone(),
                 Reply::Reaction(ReactionType::Unicode("👍".to_string())),
                 get_together.is_initialized(),
             )));
         } else if let Some(new_description) = msg_content.strip_prefix("description: ") {
             get_together.description = new_description.trim().to_string();
             return Some(Ok((
-                format!("{}", get_together),
+                get_together.clone(),
                 Reply::Reaction(ReactionType::Unicode("👍".to_string())),
                 get_together.is_initialized(),
             )));
@@ -149,7 +171,7 @@ impl Handler {
             get_together.time = Some(time.into());
             self.notify_time_change.lock().await.send(()).unwrap();
             return Some(Ok((
-                format!("{}", get_together),
+                get_together.clone(),
                 Reply::Message(format!(
                     "Time updated! Event happening in {}",
                     pretty_print_duration(time - now)
@@ -205,20 +227,30 @@ impl EventHandler for Handler {
             return; // always ignore self messages
         }
         if msg.content == "!event" {
-            match msg.channel_id.say(&ctx.http, "New Event! Reply to this message with `time: 7:30pm` to set the time. Likewise for the title and description.").await {
+            match msg
+                .channel_id
+                .send_message(&ctx.http, |m| {
+                    GetTogether::blank().create_message(m);
+                    m
+                })
+                .await
+            {
                 Ok(pong) => {
-                let serializable = {
-                    let mut msgs = self.get_togethers.write().await;
-                    msgs.insert(pong.id, GetTogether {
-                        message: pong.id,
-                        channel: msg.channel_id,
-                        title: "".to_string(),
-                        description: "".to_string(),
-                        time: None,
-                        notified: false
-                    });
-                    SerializableHandlerData::from_get_togethers(&msgs)
-                };
+                    let serializable = {
+                        let mut msgs = self.get_togethers.write().await;
+                        msgs.insert(
+                            pong.id,
+                            GetTogether {
+                                message: pong.id,
+                                channel: msg.channel_id,
+                                title: "".to_string(),
+                                description: "".to_string(),
+                                time: None,
+                                notified: false,
+                            },
+                        );
+                        SerializableHandlerData::from_get_togethers(&msgs)
+                    };
 
                     if let Err(why) = Self::serialize_state(serializable).await {
                         println!("failed to serialize! {}", why);
@@ -250,7 +282,10 @@ impl EventHandler for Handler {
                     {
                         let our_message = msg.referenced_message.as_mut().unwrap();
                         our_message
-                            .edit(ctx.http.clone(), |ed| ed.content(edit))
+                            .edit(ctx.http.clone(), |ed| {
+                                edit.edit_message(ed);
+                                ed
+                            })
                             .await
                             .unwrap_or_else(|why| {
                                 println!("Error editing original message: {:?}", why)
