@@ -1,2 +1,3 @@
 /target
-data.json
+/data.json
+/prod.sh # put discord token here
