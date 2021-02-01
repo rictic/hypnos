@@ -20,7 +20,7 @@ use std::{
     error::Error,
     sync::Arc,
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct GetTogether {
@@ -106,7 +106,7 @@ impl SerializableHandlerData {
             .into_iter()
             .map(|(key, value)| (MessageId::from(key.parse::<u64>().unwrap()), value))
             .collect();
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = channel(1);
         Handler {
             get_togethers: Arc::new(RwLock::new(get_togethers)),
             notify_time_change: Arc::new(Mutex::new(sender)),
@@ -117,8 +117,8 @@ impl SerializableHandlerData {
 
 struct Handler {
     get_togethers: Arc<RwLock<BTreeMap<MessageId, GetTogether>>>,
-    notify_time_change: Arc<Mutex<UnboundedSender<()>>>,
-    time_changed: Arc<Mutex<UnboundedReceiver<()>>>,
+    notify_time_change: Arc<Mutex<Sender<()>>>,
+    time_changed: Arc<Mutex<Receiver<()>>>,
 }
 
 enum Reply {
@@ -128,7 +128,7 @@ enum Reply {
 
 impl Handler {
     fn new() -> Self {
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = channel(1);
         Self {
             get_togethers: Default::default(),
             notify_time_change: Arc::new(Mutex::new(sender)),
@@ -169,7 +169,7 @@ impl Handler {
                 }
             };
             get_together.time = Some(time.into());
-            self.notify_time_change.lock().await.send(()).unwrap();
+            self.notify_that_time_changed().await;
             return Some(Ok((
                 get_together.clone(),
                 Reply::Message(format!(
@@ -180,6 +180,15 @@ impl Handler {
             )));
         } else {
             return Some(Err(format!("I'm confused you know. Try starting your message with `title:` or `description:` or `time:`")));
+        }
+    }
+
+    async fn notify_that_time_changed(&self) {
+        match self.notify_time_change.lock().await.try_send(()) {
+            Ok(()) => {}
+            Err(_) => {
+                // don't care, that just means it's already been notified
+            }
         }
     }
 
