@@ -106,18 +106,13 @@ impl SerializableHandlerData {
             .into_iter()
             .map(|(key, value)| (MessageId::from(key.parse::<u64>().unwrap()), value))
             .collect();
-        let (sender, receiver) = channel(1);
-        Handler {
-            get_togethers: Arc::new(RwLock::new(get_togethers)),
-            notify_time_change: Arc::new(Mutex::new(sender)),
-            time_changed: Arc::new(Mutex::new(receiver)),
-        }
+        Handler::from_state(get_togethers)
     }
 }
 
 struct Handler {
     get_togethers: Arc<RwLock<BTreeMap<MessageId, GetTogether>>>,
-    notify_time_change: Arc<Mutex<Sender<()>>>,
+    notify_time_change: Sender<()>,
     time_changed: Arc<Mutex<Receiver<()>>>,
 }
 
@@ -128,10 +123,14 @@ enum Reply {
 
 impl Handler {
     fn new() -> Self {
+        Self::from_state(Default::default())
+    }
+
+    fn from_state(get_togethers: BTreeMap<MessageId, GetTogether>) -> Self {
         let (sender, receiver) = channel(1);
         Self {
-            get_togethers: Default::default(),
-            notify_time_change: Arc::new(Mutex::new(sender)),
+            get_togethers: Arc::new(RwLock::new(get_togethers)),
+            notify_time_change: sender,
             time_changed: Arc::new(Mutex::new(receiver)),
         }
     }
@@ -184,7 +183,7 @@ impl Handler {
     }
 
     async fn notify_that_time_changed(&self) {
-        match self.notify_time_change.lock().await.try_send(()) {
+        match self.notify_time_change.try_send(()) {
             Ok(()) => {}
             Err(_) => {
                 // don't care, that just means it's already been notified
