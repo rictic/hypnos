@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Local};
 use chrono_english::{parse_date_string, Dialect};
 use futures::future::FutureExt;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serenity::{
     async_trait,
@@ -14,12 +15,7 @@ use serenity::{
     },
     prelude::*,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    env,
-    error::Error,
-    sync::Arc,
-};
+use std::{collections::{BTreeMap, BTreeSet, HashSet}, env, error::Error, fmt::Write, sync::Arc};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -237,7 +233,20 @@ impl EventHandler for Handler {
         if msg.author.name == "hypnos" {
             return; // always ignore self messages
         }
-        if msg.content == "!event" {
+        if (msg.content.starts_with(("/roll"))) {
+            let roll = DiceRollRequest::parse(msg.content.trim_start_matches("/roll"));
+            let reply = match roll {
+                Ok(roll) => {
+                    format!("Rolled: {}", roll.roll().to_discord_markdown().trim())   
+                }
+                Err(e) => {
+                    e
+                }
+            };
+            if let Err(e) = msg.reply(&ctx.http, reply).await {
+                println!("Error trying to reply about die roll: {}", e);
+            }
+        } else if msg.content == "!event" {
             match msg
                 .channel_id
                 .send_message(&ctx.http, |m| {
@@ -512,4 +521,142 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Client error: {:?}", why);
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Die {
+    sides: u64,
+}
+
+impl Die {
+    fn roll(self) -> Roll {
+        let num = rand::thread_rng().gen_range(1..=self.sides);
+        if num == 1 {
+            Roll::Glitch(self)
+        } else {
+            Roll::Value(num, self)
+        }
+    }
+}
+impl std::fmt::Display for Die {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('d')?;
+        f.write_fmt(format_args!("{}", self.sides))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Roll {
+    Glitch(Die),
+    Value(u64, Die)
+}
+impl Roll {
+    fn is_glitch(self) -> bool {
+        match self {
+            Roll::Glitch(_) => true,
+            _ => false,
+        }
+    }
+}
+
+struct DiceRollRequest {
+    dice: Vec<Die>,
+}
+
+impl DiceRollRequest {
+    fn parse(s: &str) -> Result<Self, String> {
+        let mut dice = Vec::new();
+        for s in s.split_whitespace() {
+            if s.trim().is_empty() {
+                continue;
+            }
+            let (count, die) = DiceRollRequest::get_die_count(s).ok_or_else(|| format!("Expected {} to be like XdY, e.g. 3d6 or 1d8", s))?;
+            for _ in 0..count {
+                dice.push(die);
+            }
+        }
+        Ok(DiceRollRequest { dice })
+    }
+
+    fn get_die_count(s: &str) -> Option<(u64, Die)> {
+        let (count, sides) = s.split_once('d')?;
+        let count: u64 = if count.trim().is_empty() {
+            1
+        } else {
+            count.trim().parse().ok()?
+        };
+        let sides = sides.trim().parse().ok()?;
+        Some((count, Die { sides }))
+    }
+
+    fn roll(self) -> RollResult {
+        let mut rolls = Vec::new();
+        for die in self.dice {
+            rolls.push(die.roll());
+        }
+        RollResult {rolled_die: rolls}
+    }
+
+}
+
+struct RollResult {
+    rolled_die: Vec<Roll>,
+}
+impl RollResult {
+    fn is_botch(&self) -> bool {
+        self.rolled_die.iter().all(|r| r.is_glitch())
+    }
+
+    fn to_discord_markdown(&self) -> String {
+        let mut s = String::new();
+        if self.is_botch() {
+            s += "**BOTCH!**   ";
+        }
+        for roll in self.rolled_die.iter() {
+            match roll {
+                Roll::Glitch(die) => {
+                    s.push_str(&format!("**1** (d{}) ", die.sides));
+                },
+                Roll::Value(value, die) => {
+                    s.push_str(&format!("{} (d{}) ", value, die.sides));
+                },
+            }
+        }
+        if let CortexResult::Result {amount, effect} = self.get_highest_effect() {
+            s.push_str(&format!("\n\nResult with best effect: {} (effect {})", amount, effect));
+        }
+        s
+    }
+
+    fn get_highest_effect(&self) -> CortexResult {
+        let non_glitches = self.rolled_die.iter().filter_map(|roll| {
+           match roll {
+               Roll::Glitch(_) => None,
+               Roll::Value(value, die) => Some((*value, *die)),
+           }
+        }).enumerate().collect::<Vec<_>>();
+        let effect = non_glitches.iter().max_by_key(|(_, (value, die))| {
+            (die.sides, -((*value) as i128))
+        });
+        let (effect_idx, effect) = match effect {
+            None => return CortexResult::Botch,
+            Some((index, (_, die))) => (*index, *die),
+        };
+        if non_glitches.len() < 3 {
+            // too few rolls to have an effect die, fall back to a d4
+            return CortexResult::Result {effect: Die { sides: 4 }, amount: non_glitches.into_iter().map(|(_, (v, _))| v).sum()};
+        }
+        let mut remaining_vals: Vec<_> = non_glitches.into_iter().filter(|(idx, _)| *idx != effect_idx).map(|(_, (value, _))| value).collect();
+        remaining_vals.sort();
+        let val = remaining_vals.iter().rev().take(2).sum();
+        CortexResult::Result {amount: val, effect}
+    }
+}
+
+enum CortexResult {
+    Botch,
+    Result {
+        amount: u64,
+        effect: Die,
+    }
 }
