@@ -662,7 +662,8 @@ impl DiceRollRequest {
         if let Ok(sides) = s.trim().parse() {
             return Some((1, Die { sides }));
         }
-        let (count, sides) = s.split_once('d')?;
+        let idx = s.find('d')?;
+        let (count, sides) = (&s[..idx], &s[idx + 1..]);
         let count: u64 = if count.trim().is_empty() {
             1
         } else {
