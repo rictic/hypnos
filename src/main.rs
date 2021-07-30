@@ -232,6 +232,7 @@ fn handle_interaction(interaction: &Interaction) -> Option<Result<String, String
         serenity::model::interactions::InteractionData::ApplicationCommand(cmd) => cmd,
         serenity::model::interactions::InteractionData::MessageComponent(_) => return None,
     };
+    println!("Got an interaction: {:?}", data.id);
     if data.name != "roll" {
         return Some(Err("Internal error: unknown command".to_string()));
     }
@@ -250,10 +251,14 @@ fn handle_interaction(interaction: &Interaction) -> Option<Result<String, String
         Ok(roll) => roll,
     };
     let mut roll = roll.roll();
-    let resp = format!("Rolled: {}", roll.to_discord_markdown().trim());
+    let resp = format!(
+        "Rolling {}\n\nResult: {}",
+        dice,
+        roll.to_discord_markdown().trim()
+    );
     if resp.len() > 1950 {
         Some(Ok(format!(
-            "hoo.. that's a lot. \"{}\" you say? uh, I'll give you the quick summary:\n\n{}",
+            "Roll {}?? hoo.. that's a lot. I don't wanna flood the chat here, so, uh, I'll give you the quick summary:\n\n{}",
             dice,
             roll.short_summary()
         )))
@@ -265,27 +270,46 @@ fn handle_interaction(interaction: &Interaction) -> Option<Result<String, String
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
         ctx.set_activity(Activity::listening("!event")).await;
-        // let map = serde_json::json!({
-        //     "name": "roll",
-        //     "description": "Rolls some dice and shows the results using the Cortex Prime system",
-        //     "options": [
-        //         {
-        //             "name": "dice",
-        //             "description": "The dice you want to roll, like: `d4` or `3d6 1d10` or even just `6 8 10`",
-        //             "type": 3,
-        //             "required": true,
-        //         },
-        //     ]
-        // });
-        // if let Err(e) = ctx.http.create_global_application_command(&map).await {
-        //     println!("Error creating global application command: {}", e);
-        // }
+        let commands = ctx.http.get_global_application_commands().await;
+        let commands = match commands {
+            Ok(commands) => commands,
+            Err(e) => panic!("Failed to get app commands: {}", e),
+        };
+        let roll_command = commands.iter().find(|cmd| cmd.name == "roll");
+        match roll_command {
+            Some(roll_command) => {
+                println!("Found roll command, it has id: {}", roll_command.id);
+            }
+            None => {
+                let create_command = serde_json::json!({
+                    "name": "roll",
+                    "description": "Rolls some dice and shows the results using the Cortex Prime system",
+                    "options": [
+                        {
+                            "name": "dice",
+                            "description": "The dice you want to roll, like: `d4` or `3d6 1d10` or even just `6 8 10`",
+                            "type": 3,
+                            "required": true,
+                        },
+                    ]
+                });
+                match ctx
+                    .http
+                    .create_global_application_command(&create_command)
+                    .await
+                {
+                    Ok(cmd) => println!("roll command created, it has id: {}", cmd.id),
+                    Err(e) => panic!("Error creating roll command: {}", e),
+                }
+            }
+        }
+
+        println!("{} is connected!", ready.user.name);
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        // println!("Got an interaction: {:?}", interaction);
+        println!("Got an interaction");
         let result = handle_interaction(&interaction);
         let res = interaction
             .create_interaction_response(ctx.http, |r| {
