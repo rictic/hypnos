@@ -110,10 +110,21 @@ impl SerializableHandlerData {
     }
 }
 
+fn notify(sender: &Sender<()>) {
+    match sender.try_send(()) {
+        Ok(()) => {}
+        Err(_) => {
+            // don't care, that just means it's already been notified
+        }
+    }
+}
+
 struct Handler {
     get_togethers: Arc<RwLock<BTreeMap<MessageId, GetTogether>>>,
     notify_time_change: Sender<()>,
+    notify_serialize: Arc<Sender<()>>,
     time_changed: Arc<Mutex<Receiver<()>>>,
+    should_serialize: Arc<Mutex<Receiver<()>>>,
 }
 
 enum Reply {
@@ -127,11 +138,14 @@ impl Handler {
     }
 
     fn from_state(get_togethers: BTreeMap<MessageId, GetTogether>) -> Self {
-        let (sender, receiver) = channel(1);
+        let (notify_time_change, time_changed) = channel(1);
+        let (notify_serialize, should_serialize) = channel(1);
         Self {
             get_togethers: Arc::new(RwLock::new(get_togethers)),
-            notify_time_change: sender,
-            time_changed: Arc::new(Mutex::new(receiver)),
+            notify_time_change,
+            notify_serialize: Arc::new(notify_serialize),
+            time_changed: Arc::new(Mutex::new(time_changed)),
+            should_serialize: Arc::new(Mutex::new(should_serialize)),
         }
     }
 
@@ -168,7 +182,7 @@ impl Handler {
                 }
             };
             get_together.time = Some(time.into());
-            self.notify_that_time_changed().await;
+            notify(&self.notify_time_change);
             return Some(Ok((
                 get_together.clone(),
                 Reply::Message(format!(
@@ -182,17 +196,6 @@ impl Handler {
         }
     }
 
-    async fn notify_that_time_changed(&self) {
-        match self.notify_time_change.try_send(()) {
-            Ok(()) => {}
-            Err(_) => {
-                // don't care, that just means it's already been notified
-            }
-        }
-    }
-
-    // TODO: move serialization into a green thread that's notified when
-    //     state is mutated.
     async fn serialize_state(state: SerializableHandlerData) -> Result<(), Box<dyn Error>> {
         {
             let file = std::fs::File::create("data_writing.json")?;
@@ -244,25 +247,20 @@ impl EventHandler for Handler {
                 .await
             {
                 Ok(pong) => {
-                    let serializable = {
-                        let mut msgs = self.get_togethers.write().await;
-                        msgs.insert(
-                            pong.id,
-                            GetTogether {
-                                message: pong.id,
-                                channel: msg.channel_id,
-                                title: "".to_string(),
-                                description: "".to_string(),
-                                time: None,
-                                notified: false,
-                            },
-                        );
-                        SerializableHandlerData::from_get_togethers(&msgs)
-                    };
+                    let mut msgs = self.get_togethers.write().await;
+                    msgs.insert(
+                        pong.id,
+                        GetTogether {
+                            message: pong.id,
+                            channel: msg.channel_id,
+                            title: "".to_string(),
+                            description: "".to_string(),
+                            time: None,
+                            notified: false,
+                        },
+                    );
 
-                    if let Err(why) = Self::serialize_state(serializable).await {
-                        println!("failed to serialize! {}", why);
-                    }
+                    notify(&self.notify_serialize);
                 }
                 Err(why) => {
                     println!("Error sending message: {:?}", why);
@@ -336,17 +334,14 @@ impl EventHandler for Handler {
                     }
                 }
             };
-            let get_togethers = self.get_togethers.read().await;
-            let state = SerializableHandlerData::from_get_togethers(&get_togethers);
-            if let Err(why) = Self::serialize_state(state).await {
-                println!("failed to serialize! {}", why);
-            }
+            notify(&self.notify_serialize);
         }
     }
 
     async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
         let get_togethers = self.get_togethers.clone();
         let time_changed = self.time_changed.clone();
+        let notify_serialize = self.notify_serialize.clone();
         tokio::spawn(async move {
             let mut time_changed = time_changed.lock().await;
             loop {
@@ -430,13 +425,12 @@ impl EventHandler for Handler {
                             sleep_time = dur;
                         }
                     }
+                    let should_serialize = !to_remove.is_empty();
                     for mid in to_remove.into_iter() {
                         get_togethers.remove(&mid);
                     }
-
-                    let state = SerializableHandlerData::from_get_togethers(&get_togethers);
-                    if let Err(why) = Self::serialize_state(state).await {
-                        println!("failed to serialize! {}", why);
+                    if should_serialize {
+                        notify(&notify_serialize);
                     }
 
                     println!("Sleeping for {}", sleep_time);
@@ -448,6 +442,23 @@ impl EventHandler for Handler {
                     Box::pin(tokio::time::sleep(sleep_time.into())),
                 ])
                 .await;
+            }
+        });
+
+        let get_togethers = self.get_togethers.clone();
+        let should_serialize = self.should_serialize.clone();
+        tokio::spawn(async move {
+            // Whenever asked to, write the state out to file
+            let mut should_serialize = should_serialize.lock().await;
+            loop {
+                should_serialize.recv().await;
+                let state = {
+                    let get_togethers = get_togethers.read().await;
+                    SerializableHandlerData::from_get_togethers(&get_togethers)
+                };
+                if let Err(why) = Self::serialize_state(state).await {
+                    println!("failed to serialize! {}", why);
+                }
             }
         });
     }
