@@ -11,11 +11,20 @@ use serenity::{
         channel::{Message, ReactionType},
         gateway::Ready,
         id::{ChannelId, GuildId, MessageId},
+        interactions::{
+            Interaction, InteractionApplicationCommandCallbackDataFlags, InteractionResponseType,
+        },
         prelude::{Activity, User},
     },
     prelude::*,
 };
-use std::{collections::{BTreeMap, BTreeSet, HashSet}, env, error::Error, fmt::Write, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    env,
+    error::Error,
+    fmt::Write,
+    sync::Arc,
+};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -217,11 +226,88 @@ impl Handler {
     }
 }
 
+fn handle_interaction(interaction: &Interaction) -> Option<Result<String, String>> {
+    let data = interaction.data.as_ref()?;
+    let data = match data {
+        serenity::model::interactions::InteractionData::ApplicationCommand(cmd) => cmd,
+        serenity::model::interactions::InteractionData::MessageComponent(_) => return None,
+    };
+    if data.name != "roll" {
+        return Some(Err("Internal error: unknown command".to_string()));
+    }
+    let dice = data
+        .options
+        .iter()
+        .find(|opt| opt.name == "dice")?
+        .value
+        .as_ref()?
+        .as_str()?;
+    let roll = DiceRollRequest::parse(dice);
+    let roll = match roll {
+        Err(err) => {
+            return Some(Err(err));
+        }
+        Ok(roll) => roll,
+    };
+    let mut roll = roll.roll();
+    let resp = format!("Rolled: {}", roll.to_discord_markdown().trim());
+    if resp.len() > 1950 {
+        Some(Ok(format!(
+            "hoo.. that's a lot. \"{}\" you say? uh, I'll give you the quick summary:\n\n{}",
+            dice,
+            roll.short_summary()
+        )))
+    } else {
+        Some(Ok(resp))
+    }
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         ctx.set_activity(Activity::listening("!event")).await;
+        // let map = serde_json::json!({
+        //     "name": "roll",
+        //     "description": "Rolls some dice and shows the results using the Cortex Prime system",
+        //     "options": [
+        //         {
+        //             "name": "dice",
+        //             "description": "The dice you want to roll, like: `d4` or `3d6 1d10` or even just `6 8 10`",
+        //             "type": 3,
+        //             "required": true,
+        //         },
+        //     ]
+        // });
+        // if let Err(e) = ctx.http.create_global_application_command(&map).await {
+        //     println!("Error creating global application command: {}", e);
+        // }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        // println!("Got an interaction: {:?}", interaction);
+        let result = handle_interaction(&interaction);
+        let res = interaction
+            .create_interaction_response(ctx.http, |r| {
+                r.kind(InteractionResponseType::ChannelMessageWithSource);
+                r.interaction_response_data(|r| {
+                    match result {
+                        Some(Ok(reply)) => r.content(reply),
+                        Some(Err(err)) => {
+                            r.content(err);
+                            // send as a private reply, as it was user error most likely
+                            r.flags(InteractionApplicationCommandCallbackDataFlags::EPHEMERAL)
+                        }
+                        None => r.content("Huh, had a bit of trouble following you there chap."),
+                    }
+                })
+            })
+            .await;
+        if let Err(e) = res {
+            println!("Error creating interaction response: {}", e);
+        } else {
+            println!("Sent interaction response");
+        }
     }
 
     // Set a handler for the `message` event - so that whenever a new message
@@ -233,20 +319,7 @@ impl EventHandler for Handler {
         if msg.author.name == "hypnos" {
             return; // always ignore self messages
         }
-        if (msg.content.starts_with(("/roll"))) {
-            let roll = DiceRollRequest::parse(msg.content.trim_start_matches("/roll"));
-            let reply = match roll {
-                Ok(roll) => {
-                    format!("Rolled: {}", roll.roll().to_discord_markdown().trim())   
-                }
-                Err(e) => {
-                    e
-                }
-            };
-            if let Err(e) = msg.reply(&ctx.http, reply).await {
-                println!("Error trying to reply about die roll: {}", e);
-            }
-        } else if msg.content == "!event" {
+        if msg.content == "!event" {
             match msg
                 .channel_id
                 .send_message(&ctx.http, |m| {
@@ -510,6 +583,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // by Discord for bot users.
     let mut client = Client::builder(&token)
         .event_handler(handler)
+        .application_id(800856792577736754)
         .await
         .expect("Err creating client");
 
@@ -523,7 +597,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
 struct Die {
     sides: u64,
 }
@@ -548,7 +622,7 @@ impl std::fmt::Display for Die {
 #[derive(Debug, Clone, Copy)]
 enum Roll {
     Glitch(Die),
-    Value(u64, Die)
+    Value(u64, Die),
 }
 impl Roll {
     fn is_glitch(self) -> bool {
@@ -570,7 +644,13 @@ impl DiceRollRequest {
             if s.trim().is_empty() {
                 continue;
             }
-            let (count, die) = DiceRollRequest::get_die_count(s).ok_or_else(|| format!("Expected {} to be like XdY, e.g. 3d6 or 1d8", s))?;
+            let (count, die) = DiceRollRequest::get_die_count(s)
+                .ok_or_else(|| format!("Expected {} to be like XdY, e.g. 3d6 or 1d8", s))?;
+            if count > 1_000_000 {
+                return Err(format!(
+                    "Hey buddy, I'm just a demigod, that's too many dice!",
+                ));
+            }
             for _ in 0..count {
                 dice.push(die);
             }
@@ -579,6 +659,9 @@ impl DiceRollRequest {
     }
 
     fn get_die_count(s: &str) -> Option<(u64, Die)> {
+        if let Ok(sides) = s.trim().parse() {
+            return Some((1, Die { sides }));
+        }
         let (count, sides) = s.split_once('d')?;
         let count: u64 = if count.trim().is_empty() {
             1
@@ -594,9 +677,8 @@ impl DiceRollRequest {
         for die in self.dice {
             rolls.push(die.roll());
         }
-        RollResult {rolled_die: rolls}
+        RollResult { rolled_die: rolls }
     }
-
 }
 
 struct RollResult {
@@ -607,56 +689,139 @@ impl RollResult {
         self.rolled_die.iter().all(|r| r.is_glitch())
     }
 
-    fn to_discord_markdown(&self) -> String {
+    fn to_discord_markdown(&mut self) -> String {
         let mut s = String::new();
-        if self.is_botch() {
-            s += "**BOTCH!**   ";
-        }
         for roll in self.rolled_die.iter() {
             match roll {
                 Roll::Glitch(die) => {
                     s.push_str(&format!("**1** (d{}) ", die.sides));
-                },
+                }
                 Roll::Value(value, die) => {
                     s.push_str(&format!("{} (d{}) ", value, die.sides));
-                },
+                }
             }
         }
-        if let CortexResult::Result {amount, effect} = self.get_highest_effect() {
-            s.push_str(&format!("\n\nResult with best effect: {} (effect {})", amount, effect));
+        s += "\n\n";
+        s += &self.short_summary();
+        s
+    }
+
+    fn short_summary(&mut self) -> String {
+        let mut s = String::new();
+        if self.is_botch() {
+            s += "**BOTCH!**";
+            return s;
+        }
+        let glitch_count = self.rolled_die.iter().filter(|r| r.is_glitch()).count();
+        if glitch_count > 0 {
+            s += &format!("{} Glitches!\n", glitch_count);
+        }
+        let highest_effect = self.get_highest_effect();
+        let highest_total = self.get_highest_total();
+        match (highest_effect, highest_total) {
+            (CortexResult::Botch, _) => {
+                return "Internal error, disagreement on botch??".to_string();
+            }
+            (_, CortexResult::Botch) => {
+                return "Internal error, disagreement on botch??".to_string();
+            }
+            (
+                CortexResult::Result {
+                    total: etotal,
+                    effect: eeffect,
+                },
+                CortexResult::Result {
+                    total: ttotal,
+                    effect: teffect,
+                },
+            ) => {
+                if highest_effect == highest_total {
+                    // There is one ideal interpretation
+                    s += &format!("Total: {} (effect {})", etotal, eeffect);
+                } else {
+                    s.push_str(&format!("Best effect: {} (effect {})\n", etotal, eeffect));
+                    s.push_str(&format!("Best total: {} (effect {})\n", ttotal, teffect));
+                }
+            }
         }
         s
     }
 
     fn get_highest_effect(&self) -> CortexResult {
-        let non_glitches = self.rolled_die.iter().filter_map(|roll| {
-           match roll {
-               Roll::Glitch(_) => None,
-               Roll::Value(value, die) => Some((*value, *die)),
-           }
-        }).enumerate().collect::<Vec<_>>();
-        let effect = non_glitches.iter().max_by_key(|(_, (value, die))| {
-            (die.sides, -((*value) as i128))
-        });
+        let non_glitches = self
+            .rolled_die
+            .iter()
+            .filter_map(|roll| match roll {
+                Roll::Glitch(_) => None,
+                Roll::Value(value, die) => Some((*value, *die)),
+            })
+            .enumerate()
+            .collect::<Vec<_>>();
+        let effect = non_glitches
+            .iter()
+            .max_by_key(|(_, (value, die))| (die.sides, -((*value) as i128)));
         let (effect_idx, effect) = match effect {
             None => return CortexResult::Botch,
             Some((index, (_, die))) => (*index, *die),
         };
         if non_glitches.len() < 3 {
             // too few rolls to have an effect die, fall back to a d4
-            return CortexResult::Result {effect: Die { sides: 4 }, amount: non_glitches.into_iter().map(|(_, (v, _))| v).sum()};
+            return CortexResult::Result {
+                effect: Die { sides: 4 },
+                total: non_glitches.into_iter().map(|(_, (v, _))| v).sum(),
+            };
         }
-        let mut remaining_vals: Vec<_> = non_glitches.into_iter().filter(|(idx, _)| *idx != effect_idx).map(|(_, (value, _))| value).collect();
+        let mut remaining_vals: Vec<_> = non_glitches
+            .into_iter()
+            .filter(|(idx, _)| *idx != effect_idx)
+            .map(|(_, (value, _))| value)
+            .collect();
         remaining_vals.sort();
         let val = remaining_vals.iter().rev().take(2).sum();
-        CortexResult::Result {amount: val, effect}
+        CortexResult::Result { total: val, effect }
+    }
+
+    fn get_highest_total(&mut self) -> CortexResult {
+        self.rolled_die.sort_by_key(|roll| match roll {
+            Roll::Glitch(_) => (0, 0),
+            Roll::Value(v, d) => (*v, -(d.sides as i128)),
+        });
+        let total = self
+            .rolled_die
+            .iter()
+            .rev()
+            .take(2)
+            .filter_map(|roll| {
+                if let Roll::Value(v, _) = roll {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
+            .sum();
+        if total == 0 {
+            return CortexResult::Botch;
+        }
+        let effect = self
+            .rolled_die
+            .iter()
+            .rev()
+            .skip(2)
+            .filter_map(|d| {
+                if let Roll::Value(_, d) = d {
+                    Some(*d)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(Die { sides: 4 });
+        CortexResult::Result { total, effect }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CortexResult {
     Botch,
-    Result {
-        amount: u64,
-        effect: Die,
-    }
+    Result { total: u64, effect: Die },
 }
