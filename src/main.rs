@@ -1,38 +1,28 @@
-use rand::Rng;
-use serenity::{
-    async_trait,
-    model::{
-        gateway::Ready,
-        interactions::{
-            Interaction, InteractionApplicationCommandCallbackDataFlags, InteractionResponseType,
-        },
-        prelude::Activity,
-    },
-    prelude::*,
-};
-use std::{env, error::Error, fmt::Write};
+use poise::serenity_prelude as serenity;
 
-fn handle_interaction(interaction: &Interaction) -> Option<Result<String, String>> {
-    let data = interaction.data.as_ref()?;
-    let data = match data {
-        serenity::model::interactions::InteractionData::ApplicationCommand(cmd) => cmd,
-        serenity::model::interactions::InteractionData::MessageComponent(_) => return None,
-    };
-    println!("Got an interaction: {:?}", data.id);
-    if data.name != "roll" {
-        return Some(Err("Internal error: unknown command".to_string()));
-    }
-    let dice = data
-        .options
-        .iter()
-        .find(|opt| opt.name == "dice")?
-        .value
-        .as_ref()?
-        .as_str()?;
-    let roll = DiceRollRequest::parse(dice);
+struct Data {} // User data, which is stored and accessible in all command invocations
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Context<'a> = poise::Context<'a, Data, Error>;
+use rand::Rng;
+use std::fmt::Write;
+
+/// Displays your or another user's account creation date
+#[poise::command(slash_command, prefix_command)]
+async fn roll(
+    ctx: Context<'_>,
+    #[description = "The dice you want to roll, like: `d4` or `3d6 1d10` or even just `6 8 10`"]
+    dice: String,
+) -> Result<(), Error> {
+    let response = handle_command(&dice);
+    ctx.say(response).await?;
+    Ok(())
+}
+
+fn handle_command(dice: &String) -> String {
+    let roll = DiceRollRequest::parse(&dice);
     let roll = match roll {
         Err(err) => {
-            return Some(Err(err));
+            return err;
         }
         Ok(roll) => roll,
     };
@@ -43,114 +33,33 @@ fn handle_interaction(interaction: &Interaction) -> Option<Result<String, String
         roll.to_discord_markdown().trim()
     );
     if resp.len() > 1950 {
-        Some(Ok(format!(
+        format!(
             "Roll {}?? hoo.. that's a lot. I don't wanna flood the chat here, so, uh, I'll give you the quick summary:\n\n{}",
             dice,
             roll.short_summary()
-        )))
+        )
     } else {
-        Some(Ok(resp))
-    }
-}
-
-struct Handler {}
-
-impl Handler {
-    fn new() -> Self {
-        Handler {}
-    }
-}
-
-#[async_trait]
-impl EventHandler for Handler {
-    async fn ready(&self, ctx: Context, ready: Ready) {
-        ctx.set_activity(Activity::listening("chilling")).await;
-        let commands = ctx.http.get_global_application_commands().await;
-        let commands = match commands {
-            Ok(commands) => commands,
-            Err(e) => panic!("Failed to get app commands: {}", e),
-        };
-        let roll_command = commands.iter().find(|cmd| cmd.name == "roll");
-        match roll_command {
-            Some(_) => {}
-            None => {
-                let create_command = serde_json::json!({
-                    "name": "roll",
-                    "description": "Rolls some dice and shows the results using the Cortex Prime system",
-                    "options": [
-                        {
-                            "name": "dice",
-                            "description": "The dice you want to roll, like: `d4` or `3d6 1d10` or even just `6 8 10`",
-                            "type": 3,
-                            "required": true,
-                        },
-                    ]
-                });
-                match ctx
-                    .http
-                    .create_global_application_command(&create_command)
-                    .await
-                {
-                    Ok(cmd) => println!("roll command created, it has id: {}", cmd.id),
-                    Err(e) => panic!("Error creating roll command: {}", e),
-                }
-            }
-        }
-
-        println!("{} is connected!", ready.user.name);
-    }
-
-    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        println!("Got an interaction");
-        let result = handle_interaction(&interaction);
-        let res = interaction
-            .create_interaction_response(ctx.http, |r| {
-                r.kind(InteractionResponseType::ChannelMessageWithSource);
-                r.interaction_response_data(|r| {
-                    match result {
-                        Some(Ok(reply)) => r.content(reply),
-                        Some(Err(err)) => {
-                            r.content(err);
-                            // send as a private reply, as it was user error most likely
-                            r.flags(InteractionApplicationCommandCallbackDataFlags::EPHEMERAL)
-                        }
-                        None => r.content("Huh, had a bit of trouble following you there chap."),
-                    }
-                })
-            })
-            .await;
-        if let Err(e) = res {
-            println!("Error creating interaction response: {}", e);
-        } else {
-            println!("Sent interaction response");
-        }
+        resp
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // Configure the client with your Discord bot token in the environment.
-    let token = env::var("DISCORD_TOKEN").expect("Expected DISCORD_TOKEN environment variable");
+async fn main() {
+    let framework = poise::Framework::builder()
+        .options(poise::FrameworkOptions {
+            commands: vec![roll()],
+            ..Default::default()
+        })
+        .token(std::env::var("DISCORD_TOKEN").expect("missing DISCORD_TOKEN env variable"))
+        .intents(serenity::GatewayIntents::non_privileged())
+        .setup(|ctx, _ready, framework| {
+            Box::pin(async move {
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(Data {})
+            })
+        });
 
-    let handler = Handler::new();
-
-    // Create a new instance of the Client, logging in as a bot. This will
-    // automatically prepend your bot token with "Bot ", which is a requirement
-    // by Discord for bot users.
-    let mut client = Client::builder(&token)
-        .event_handler(handler)
-        .application_id(800856792577736754)
-        .await
-        .expect("Err creating client");
-
-    // Finally, start a single shard, and start listening to events.
-    //
-    // Shards will automatically attempt to reconnect, and will perform
-    // exponential backoff until it reconnects.
-    if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
-    }
-    Ok(())
+    framework.run().await.unwrap();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
