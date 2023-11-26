@@ -8,6 +8,7 @@ pub async fn gen(
     #[description = "The description of the image"] description: String,
 ) -> Result<(), Error> {
     let reply = ctx.reply("Generating image...").await?;
+    let reply_message = reply.message().await.ok();
     let images = OpenAIImageGen::new()?.create_image(ImageRequest {
         description,
         dimensions: Dimensions::Square,
@@ -39,7 +40,10 @@ pub async fn gen(
                     )
                     .to_string(),
                 }),
-            |f| f,
+            |f| match reply_message {
+                Some(msg) => f.reference_message((ctx.channel_id(), msg.id)),
+                None => f,
+            },
         )
         .await?;
     reply
