@@ -15,9 +15,13 @@ pub async fn gen(
     style: Option<Style>,
     #[description = "The quality of the image that will be generated."] quality: Option<Quality>,
 ) -> Result<(), Error> {
-    let reply = ctx.reply("Generating image...").await?;
-    let reply_message = reply.message().await.ok();
     let num = num.unwrap_or(4);
+    let reply = if num == 1 {
+        ctx.reply("Generating image...").await?
+    } else {
+        ctx.reply(format!("Generating {} images...", num)).await?
+    };
+    let reply_message = reply.message().await.ok();
     if num > 10 {
         reply
             .edit(ctx, |m| {
@@ -36,7 +40,6 @@ pub async fn gen(
             .await?;
         return Ok(());
     }
-
     let images = OpenAIImageGen::new()?
         .create_image(ImageRequest {
             description,
@@ -220,7 +223,11 @@ impl OpenAIImageGen {
 
                     let json_response: OpenAIImages =
                         serde_json::from_str(&response).map_err(|op| {
-                            format!("Failed to parse OpenAI response as JSON: {:?}", op).to_string()
+                            format!(
+                                "Failed to parse OpenAI response as JSON: {:?}. Full response: {}",
+                                op, response
+                            )
+                            .to_string()
                         })?;
                     let images = match json_response.data {
                         Some(images) => images,
