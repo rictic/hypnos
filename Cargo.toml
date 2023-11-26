@@ -15,6 +15,7 @@ poise = "0.5.7"
 ureq = { version = "2.9.1", features = ["json", "gzip", "tls"] }
 serde = { version = "1.0.193", features = ["std", "derive"]}
 base64 = "0.21.5"
+reqwest = "0.11.22"
 
 [profile.dev]
 split-debuginfo = "unpacked"

@@ -1,6 +1,8 @@
 use crate::data::{Context, Error};
 use base64::Engine;
+use futures::future::join_all;
 use poise::serenity_prelude as serenity;
+use serde_json::json;
 
 #[poise::command(slash_command)]
 pub async fn gen(
@@ -9,10 +11,13 @@ pub async fn gen(
 ) -> Result<(), Error> {
     let reply = ctx.reply("Generating image...").await?;
     let reply_message = reply.message().await.ok();
-    let images = OpenAIImageGen::new()?.create_image(ImageRequest {
-        description,
-        dimensions: Dimensions::Square,
-    })?;
+    let images = OpenAIImageGen::new()?
+        .create_image(ImageRequest {
+            description,
+            num: 4,
+            dimensions: Dimensions::Square,
+        })
+        .await?;
     let mut failures = 0;
     let mut actual_images = Vec::new();
     for image in images.into_iter() {
@@ -94,8 +99,9 @@ impl OpenAIImageGen {
 }
 
 #[derive(Debug, Clone)]
-pub struct ImageRequest {
-    pub description: String,
+struct ImageRequest {
+    description: String,
+    num: u8,
     dimensions: Dimensions,
 }
 
@@ -114,49 +120,68 @@ impl Dimensions {
 }
 
 impl OpenAIImageGen {
-    fn create_image(&self, request: ImageRequest) -> Result<Vec<Result<Image, String>>, String> {
-        let response = ureq::post(OPENAI_IMAGE_GEN_URL)
-            .set("Authorization", &format!("Bearer {}", self.key))
-            .set("Content-Type", "application/json")
-            .send_json(ureq::json!({
-              "model": "dall-e-3",
-              "n": 1,
-              "response_format": "b64_json",
-              "size": request.dimensions.to_size(),
-              "prompt": request.description,
-              "quality": "hd",
-              "style": "vivid",
-            }))
-            .map_err(|e| match e {
-                ureq::Error::Status(code, response) => {
-                    format!(
-                        "OpenAI returned status code {}: {}",
-                        code,
-                        response
-                            .into_string()
-                            .unwrap_or("unable to get response".to_string())
-                    )
-                }
-                ureq::Error::Transport(e) => format!("Transport error: {}", e.to_string()),
-            })?
-            .into_string()
-            .map_err(|e| e.to_string())?;
-        println!("OpenAI response: {}", response);
+    async fn create_image(
+        &self,
+        request: ImageRequest,
+    ) -> Result<Vec<Result<Image, Error>>, Error> {
+        let client = reqwest::Client::new();
 
-        let images: OpenAIImages = serde_json::from_str(&response).map_err(|op| {
-            format!(
-                "Failed to parse OpenAI response as JSON: {:?}\n\nResponse: {}",
-                op, response
-            )
-        })?;
-        let images = match images.data {
-            None => return Err("OpenAI returned no images".to_string()),
-            Some(images) => images,
-        };
-        Ok(images
+        let mut tasks = vec![];
+        for _ in 0..request.num {
+            let client = client.clone();
+            let key = self.key.clone();
+            let request_clone = request.clone(); // Assuming ImageRequest is cloneable
+
+            let task: tokio::task::JoinHandle<Result<Vec<Result<Image, Error>>, Error>> =
+                tokio::spawn(async move {
+                    let response = client
+                        .post(OPENAI_IMAGE_GEN_URL)
+                        .bearer_auth(&key)
+                        .json(&json!({
+                            "model": "dall-e-3",
+                            "n": 1,
+                            "response_format": "b64_json",
+                            "size": request_clone.dimensions.to_size(),
+                            "prompt": request_clone.description,
+                            "quality": "hd",
+                            "style": "vivid",
+                        }))
+                        .send()
+                        .await?
+                        .text()
+                        .await?;
+
+                    let json_response: OpenAIImages =
+                        serde_json::from_str(&response).map_err(|op| {
+                            format!("Failed to parse OpenAI response as JSON: {:?}", op).to_string()
+                        })?;
+                    let images = match json_response.data {
+                        Some(images) => images,
+                        None => return Err("OpenAI returned no images".into()),
+                    };
+                    let images: Vec<Result<Image, Error>> = images
+                        .into_iter()
+                        .map(|image| Image::from_open_ai(image))
+                        .collect();
+                    Ok(images)
+                });
+            tasks.push(task);
+        }
+
+        let responses = join_all(tasks)
+            .await
             .into_iter()
-            .map(|image| Image::from_open_ai(image))
-            .collect())
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut images = Vec::new();
+        for response in responses.into_iter() {
+            match response {
+                Ok(mut r) => images.append(&mut r),
+                Err(err) => images.push(Err(err)),
+            }
+        }
+
+        Ok(images)
     }
 }
 
@@ -166,10 +191,10 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn from_open_ai(response: OpenAIImageData) -> Result<Self, String> {
+    pub fn from_open_ai(response: OpenAIImageData) -> Result<Self, Error> {
         let bytes = match base64::engine::general_purpose::STANDARD.decode(response.b64_json) {
             Ok(bytes) => bytes,
-            Err(_) => return Err("failed to decode base64 image from OpenAI".to_string()),
+            Err(_) => return Err("failed to decode base64 image from OpenAI".into()),
         };
         Ok(Self {
             revised_prompt: response.revised_prompt,
