@@ -1,13 +1,14 @@
 mod dalle;
 mod data;
 mod dice;
+mod sparkle;
 use poise::serenity_prelude as serenity;
 
 #[tokio::main]
 async fn main() {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![dice::roll(), dalle::gen()],
+            commands: vec![dice::roll(), dalle::gen(), sparkle::shimmer()],
             ..Default::default()
         })
         .token(std::env::var("DISCORD_TOKEN").expect("missing DISCORD_TOKEN env variable"))
