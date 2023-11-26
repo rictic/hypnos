@@ -156,7 +156,7 @@ impl ImageRequest {
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
-enum Dimensions {
+pub enum Dimensions {
     #[name = "A wide landscape image, 1792x1024"]
     Wide,
     #[name = "A tall portrait image, 1024x1792"]
@@ -175,7 +175,7 @@ impl Dimensions {
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
-enum Style {
+pub enum Style {
     #[name = "More natural, less hyper-real looking images"]
     Natural,
     #[name = "Generate hyper-real and dramatic images"]
@@ -191,7 +191,7 @@ impl Style {
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
-enum Quality {
+pub enum Quality {
     #[name = "The default"]
     Standard,
     #[name = "Finer details and greater consistency across the image"]
