@@ -29,7 +29,7 @@ async fn main() {
                         println!(" - {}", command.name);
                     }
                 }
-                Ok(data::Data {})
+                Ok(data::Data::read_or_create().await?)
             })
         });
     println!("Starting bot...");

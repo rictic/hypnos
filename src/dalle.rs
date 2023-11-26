@@ -1,4 +1,4 @@
-use crate::data::{Context, Error};
+use crate::data::{Context, Cost, Error};
 use base64::Engine;
 use futures::future::join_all;
 use poise::serenity_prelude as serenity;
@@ -15,40 +15,42 @@ pub async fn gen(
     style: Option<Style>,
     #[description = "The quality of the image that will be generated."] quality: Option<Quality>,
 ) -> Result<(), Error> {
+    let user = ctx.author();
     let num = num.unwrap_or(4);
+    if num > 10 {
+        ctx.reply("This mortal frame can't handle such treasures. Ten is the max at once, chum")
+            .await?;
+        return Ok(());
+    }
+    if num == 0 {
+        ctx.reply("Getting philosophical with us eh? Here's zero images for you:")
+            .await?;
+        return Ok(());
+    }
+    let request = ImageRequest {
+        description,
+        num,
+        dimensions: size.unwrap_or(Dimensions::Square),
+        style: style.unwrap_or(Style::Vivid),
+        quality: quality.unwrap_or(Quality::Standard),
+    };
+    let permitted = crate::data::report_cost(ctx.data(), user, request.cost()).await?;
+    if permitted == crate::data::RequestPermitted::No {
+        ctx.send(|m| {
+            m.content("Limit reached. Ping rictic and ask him to to update your limits.")
+                .reply(true)
+                .ephemeral(true)
+        })
+        .await?;
+        return Ok(());
+    }
     let reply = if num == 1 {
         ctx.reply("Generating image...").await?
     } else {
         ctx.reply(format!("Generating {} images...", num)).await?
     };
     let reply_message = reply.message().await.ok();
-    if num > 10 {
-        reply
-            .edit(ctx, |m| {
-                m.content(
-                    "This mortal frame can't handle such treasures. Ten is the max at once, chum",
-                )
-            })
-            .await?;
-        return Ok(());
-    }
-    if num == 0 {
-        reply
-            .edit(ctx, |m| {
-                m.content("Getting philosophical with us eh? Here's zero images for you:")
-            })
-            .await?;
-        return Ok(());
-    }
-    let images = OpenAIImageGen::new()?
-        .create_image(ImageRequest {
-            description,
-            num,
-            dimensions: size.unwrap_or(Dimensions::Square),
-            style: style.unwrap_or(Style::Vivid),
-            quality: quality.unwrap_or(Quality::Standard),
-        })
-        .await?;
+    let images = OpenAIImageGen::new()?.create_image(request).await?;
     let mut failures = 0;
     let mut actual_images = Vec::new();
     for image in images.into_iter() {
@@ -104,24 +106,23 @@ pub async fn gen(
 const OPENAI_IMAGE_GEN_URL: &'static str = "https://api.openai.com/v1/images/generations";
 
 #[derive(Debug, serde::Deserialize, Clone)]
-pub struct OpenAIImages {
-    pub created: u64,
-    pub data: Option<Vec<OpenAIImageData>>,
+struct OpenAIImages {
+    data: Option<Vec<OpenAIImageData>>,
 }
 
 #[derive(Debug, serde::Deserialize, Clone)]
-pub struct OpenAIImageData {
-    pub revised_prompt: Option<String>,
-    pub b64_json: String,
+struct OpenAIImageData {
+    revised_prompt: Option<String>,
+    b64_json: String,
 }
 impl OpenAIImageData {}
 
-pub struct OpenAIImageGen {
+struct OpenAIImageGen {
     key: String,
 }
 
 impl OpenAIImageGen {
-    pub fn new() -> Result<Self, String> {
+    fn new() -> Result<Self, String> {
         let key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| Err("missing OPENAI_API_KEY env variable".to_string()))?;
 
@@ -137,9 +138,21 @@ struct ImageRequest {
     style: Style,
     quality: Quality,
 }
+impl ImageRequest {
+    fn cost(&self) -> Cost {
+        // https://openai.com/pricing#:~:text=Other%20models-,Image%20models,-Build%20DALL%C2%B7E%20directly
+        let base_cents = match (self.dimensions, self.quality) {
+            (Dimensions::Square, Quality::Standard) => 4,
+            (Dimensions::Square, Quality::HD) => 8,
+            (_, Quality::Standard) => 8,
+            (_, Quality::HD) => 12,
+        };
+        return Cost::cents(base_cents * self.num as u64);
+    }
+}
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
-pub enum Dimensions {
+enum Dimensions {
     #[name = "A wide landscape image, 1792x1024"]
     Wide,
     #[name = "A tall portrait image, 1024x1792"]
@@ -158,7 +171,7 @@ impl Dimensions {
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
-pub enum Style {
+enum Style {
     #[name = "More natural, less hyper-real looking images"]
     Natural,
     #[name = "Generate hyper-real and dramatic images"]
@@ -174,7 +187,7 @@ impl Style {
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
-pub enum Quality {
+enum Quality {
     #[name = "The default"]
     Standard,
     #[name = "Finer details and greater consistency across the image"]
@@ -259,13 +272,13 @@ impl OpenAIImageGen {
     }
 }
 
-pub struct Image {
+struct Image {
     revised_prompt: Option<String>,
     bytes: Vec<u8>,
 }
 
 impl Image {
-    pub fn from_open_ai(response: OpenAIImageData) -> Result<Self, Error> {
+    fn from_open_ai(response: OpenAIImageData) -> Result<Self, Error> {
         let bytes = match base64::engine::general_purpose::STANDARD.decode(response.b64_json) {
             Ok(bytes) => bytes,
             Err(_) => return Err("failed to decode base64 image from OpenAI".into()),
