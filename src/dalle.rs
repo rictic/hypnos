@@ -34,7 +34,7 @@ pub async fn gen(
         style: style.unwrap_or(Style::Vivid),
         quality: quality.unwrap_or(Quality::Standard),
     };
-    let permitted = crate::data::report_cost(ctx.data(), user, request.cost()).await?;
+    let permitted = crate::data::debit_for_request(ctx.data(), user, &request).await?;
     if permitted == crate::data::RequestPermitted::No {
         ctx.send(|m| {
             m.content("Limit reached. Ping rictic and ask him to to update your limits.")
@@ -131,7 +131,7 @@ impl OpenAIImageGen {
 }
 
 #[derive(Debug, Clone)]
-struct ImageRequest {
+pub struct ImageRequest {
     description: String,
     num: u8,
     dimensions: Dimensions,
@@ -139,7 +139,7 @@ struct ImageRequest {
     quality: Quality,
 }
 impl ImageRequest {
-    fn cost(&self) -> Cost {
+    pub fn cost(&self) -> Cost {
         // https://openai.com/pricing#:~:text=Other%20models-,Image%20models,-Build%20DALL%C2%B7E%20directly
         let base_cents = match (self.dimensions, self.quality) {
             (Dimensions::Square, Quality::Standard) => 4,
@@ -148,6 +148,10 @@ impl ImageRequest {
             (_, Quality::HD) => 12,
         };
         return Cost::cents(base_cents * self.num as u64);
+    }
+
+    pub fn num_images(&self) -> u8 {
+        self.num
     }
 }
 
@@ -244,7 +248,9 @@ impl OpenAIImageGen {
                         })?;
                     let images = match json_response.data {
                         Some(images) => images,
-                        None => return Err("OpenAI returned no images".into()),
+                        None => {
+                            return Err(format!("OpenAI returned no images: {}", response).into())
+                        }
                     };
                     let images: Vec<Result<Image, Error>> = images
                         .into_iter()

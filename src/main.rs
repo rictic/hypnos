@@ -1,6 +1,7 @@
 mod dalle;
 mod data;
 mod dice;
+mod info;
 mod sparkle;
 use poise::serenity_prelude as serenity;
 
@@ -8,7 +9,7 @@ use poise::serenity_prelude as serenity;
 async fn main() {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![dice::roll(), dalle::gen(), sparkle::shimmer()],
+            commands: vec![dice::roll(), dalle::gen(), sparkle::shimmer(), info::info()],
             ..Default::default()
         })
         .token(std::env::var("DISCORD_TOKEN").expect("missing DISCORD_TOKEN env variable"))
