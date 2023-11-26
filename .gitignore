@@ -3,3 +3,4 @@
 /prod.sh # put discord token here
 secrets.env
 nohup.out
+/image*.png

@@ -10,7 +10,7 @@ pub async fn roll(
     dice: String,
 ) -> Result<(), Error> {
     let response = get_response(&dice);
-    ctx.say(response).await?;
+    ctx.say(format!("Zim: {}", response)).await?;
     Ok(())
 }
 

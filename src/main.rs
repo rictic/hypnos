@@ -1,26 +1,36 @@
+mod dalle;
 mod data;
 mod dice;
 use poise::serenity_prelude as serenity;
-
-//  import roll from dice.rs
-use crate::data::Data;
-use crate::dice::roll;
 
 #[tokio::main]
 async fn main() {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![roll()],
+            commands: vec![dice::roll(), dalle::gen()],
             ..Default::default()
         })
         .token(std::env::var("DISCORD_TOKEN").expect("missing DISCORD_TOKEN env variable"))
         .intents(serenity::GatewayIntents::non_privileged())
         .setup(|ctx, _ready, framework| {
             Box::pin(async move {
-                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                Ok(Data {})
+                println!("Registering commands...");
+                let result =
+                    poise::builtins::register_globally(ctx, &framework.options().commands).await;
+                if let Err(err) = result {
+                    println!("Failed to register commands: {}", err);
+                } else {
+                    println!(
+                        "Registered {} commands successfully",
+                        framework.options().commands.len()
+                    );
+                    for command in framework.options().commands.iter() {
+                        println!(" - {}", command.name);
+                    }
+                }
+                Ok(data::Data {})
             })
         });
-
+    println!("Starting bot...");
     framework.run().await.unwrap();
 }
