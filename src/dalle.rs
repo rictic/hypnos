@@ -7,15 +7,43 @@ use serde_json::json;
 #[poise::command(slash_command)]
 pub async fn gen(
     ctx: Context<'_>,
-    #[description = "The description of the image"] description: String,
+    #[description = "The description of the image. DALL-E will automatically expand it."]
+    description: String,
+    #[description = "The number of images to generate"] num: Option<u8>,
+    #[description = "The aspect ratio"] size: Option<Dimensions>,
+    #[description = "Should the image be super colorful or are more muted colors ok?"]
+    style: Option<Style>,
+    #[description = "The quality of the image that will be generated."] quality: Option<Quality>,
 ) -> Result<(), Error> {
     let reply = ctx.reply("Generating image...").await?;
     let reply_message = reply.message().await.ok();
+    let num = num.unwrap_or(4);
+    if num > 10 {
+        reply
+            .edit(ctx, |m| {
+                m.content(
+                    "This mortal frame can't handle such treasures. Ten is the max at once, chum",
+                )
+            })
+            .await?;
+        return Ok(());
+    }
+    if num == 0 {
+        reply
+            .edit(ctx, |m| {
+                m.content("Getting philosophical with us eh? Here's zero images for you:")
+            })
+            .await?;
+        return Ok(());
+    }
+
     let images = OpenAIImageGen::new()?
         .create_image(ImageRequest {
             description,
-            num: 4,
-            dimensions: Dimensions::Square,
+            num,
+            dimensions: size.unwrap_or(Dimensions::Square),
+            style: style.unwrap_or(Style::Vivid),
+            quality: quality.unwrap_or(Quality::Standard),
         })
         .await?;
     let mut failures = 0;
@@ -103,18 +131,57 @@ struct ImageRequest {
     description: String,
     num: u8,
     dimensions: Dimensions,
+    style: Style,
+    quality: Quality,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
 pub enum Dimensions {
+    #[name = "A wide landscape image, 1792x1024"]
+    Wide,
+    #[name = "A tall portrait image, 1024x1792"]
+    Tall,
+    #[name = "A square image, 1024x1024"]
     Square,
 }
 impl Dimensions {
     fn to_size(&self) -> &'static str {
         match self {
             Dimensions::Square => "1024x1024",
-            // Dimensions::Wide => "1792x1024",
-            // Dimensions::Tall => "1024x1792",
+            Dimensions::Wide => "1792x1024",
+            Dimensions::Tall => "1024x1792",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum Style {
+    #[name = "More natural, less hyper-real looking images"]
+    Natural,
+    #[name = "Generate hyper-real and dramatic images"]
+    Vivid,
+}
+impl Style {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Style::Natural => "natural",
+            Style::Vivid => "vivid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum Quality {
+    #[name = "The default"]
+    Standard,
+    #[name = "Finer details and greater consistency across the image"]
+    HD,
+}
+impl Quality {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Quality::Standard => "standard",
+            Quality::HD => "hd",
         }
     }
 }
@@ -143,8 +210,8 @@ impl OpenAIImageGen {
                             "response_format": "b64_json",
                             "size": request_clone.dimensions.to_size(),
                             "prompt": request_clone.description,
-                            "quality": "hd",
-                            "style": "vivid",
+                            "quality": request_clone.quality.to_str(),
+                            "style": request_clone.style.to_str(),
                         }))
                         .send()
                         .await?
