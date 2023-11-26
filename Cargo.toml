@@ -1,6 +1,6 @@
 [package]
 name = "hypnos"
-version = "1.2.0"
+version = "1.2.1"
 authors = ["rictic <me@rictic.com>"]
 edition = "2021"
 
