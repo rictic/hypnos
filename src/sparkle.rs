@@ -45,6 +45,23 @@ enum Die {
     D6,
     D8,
     D10,
+    D12,
+}
+
+// implement converting from an i32 to a Die (or None if it's not one of the valid ones)
+impl TryFrom<i32> for Die {
+    type Error = ();
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            4 => Ok(Die::D4),
+            6 => Ok(Die::D6),
+            8 => Ok(Die::D8),
+            10 => Ok(Die::D10),
+            12 => Ok(Die::D12),
+            _ => Err(()),
+        }
+    }
 }
 
 impl Die {
@@ -54,6 +71,7 @@ impl Die {
             Die::D6 => 6,
             Die::D8 => 8,
             Die::D10 => 10,
+            Die::D12 => 10,
         }
     }
     fn bump_up(self) -> Die {
@@ -61,26 +79,38 @@ impl Die {
             Die::D4 => Die::D6,
             Die::D6 => Die::D8,
             Die::D8 => Die::D10,
-            Die::D10 => Die::D10,
+            Die::D10 => Die::D12,
+            Die::D12 => Die::D12,
         }
     }
     fn roll(self) -> Roll {
         let num = rand::thread_rng().gen_range(1..=self.sides());
-        // A D10 is the biggest, it can't shimmer.
-        if let Die::D10 = self {
+        if num == 1 {
+            return Roll::Glitch(self);
+        }
+        // A D12 is the biggest, it can't shimmer.
+        if let Die::D12 = self {
             return Roll::Value(num, self);
         }
         if num == self.sides() {
-            // shimmer!
+            // shimmer potential!
             let bigger_die = self.bump_up();
             let bigger_roll = bigger_die.roll();
             match bigger_roll {
-                Roll::Value(val, _) => Roll::Shimmer {
-                    initial: self,
-                    ultimate: bigger_die,
-                    shimmer_count: 1,
-                    value: num.max(val),
-                },
+                Roll::Glitch(_) => Roll::Value(num, self),
+                Roll::Value(val, _) => {
+                    if val < num {
+                        Roll::Value(num, self)
+                    } else {
+                        Roll::Shimmer {
+                            initial: self,
+                            ultimate: bigger_die,
+                            shimmer_count: 1,
+                            value: num.max(val),
+                        }
+                    }
+                }
+                // Repeated shimmer!
                 Roll::Shimmer {
                     ultimate,
                     value,
@@ -114,11 +144,19 @@ enum Roll {
         shimmer_count: u8,
         value: u64,
     },
+    Glitch(Die),
 }
 impl Roll {
     fn is_shimmer(self) -> bool {
         match self {
             Roll::Shimmer { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn is_glitch(self) -> bool {
+        match self {
+            Roll::Glitch(_) => true,
             _ => false,
         }
     }
@@ -150,14 +188,8 @@ impl DiceRollRequest {
     }
 
     fn get_die_count(s: &str) -> Option<(u64, Die)> {
-        if let Ok(sides) = s.trim().parse() {
-            match sides {
-                4 => return Some((1, Die::D4)),
-                6 => return Some((1, Die::D6)),
-                8 => return Some((1, Die::D8)),
-                10 => return Some((1, Die::D10)),
-                _ => return None,
-            }
+        if let Ok(sides) = s.trim().parse::<i32>() {
+            return Some((1, sides.try_into().ok()?));
         }
         let idx = s.find('d')?;
         let (count, sides) = (&s[..idx], &s[idx + 1..]);
@@ -166,14 +198,8 @@ impl DiceRollRequest {
         } else {
             count.trim().parse().ok()?
         };
-        let sides = sides.trim().parse().ok()?;
-        match sides {
-            4 => Some((count, Die::D4)),
-            6 => Some((count, Die::D6)),
-            8 => Some((count, Die::D8)),
-            10 => Some((count, Die::D10)),
-            _ => None,
-        }
+        let sides: i32 = sides.trim().parse().ok()?;
+        Some((count, sides.try_into().ok()?))
     }
 
     fn roll(self) -> RollResult {
@@ -189,10 +215,17 @@ struct RollResult {
     rolled_die: Vec<Roll>,
 }
 impl RollResult {
+    fn is_botch(&self) -> bool {
+        self.rolled_die.iter().all(|r| r.is_glitch())
+    }
+
     fn to_discord_markdown(&mut self) -> String {
         let mut s = String::new();
         for roll in self.rolled_die.iter() {
             match roll {
+                Roll::Glitch(die) => {
+                    s.push_str(&format!("**1** (d{}) ", die.sides()));
+                }
                 Roll::Shimmer {
                     initial,
                     ultimate,
@@ -228,6 +261,15 @@ impl RollResult {
 
     fn short_summary(&mut self) -> String {
         let mut s = String::new();
+        if self.is_botch() {
+            s += "**BOTCH!**";
+            return s;
+        }
+
+        let glitch_count = self.rolled_die.iter().filter(|r| r.is_glitch()).count();
+        if glitch_count > 0 {
+            s += &format!("{} Glitches!\n", glitch_count);
+        }
         let shimmer_count = self.rolled_die.iter().filter(|r| r.is_shimmer()).count();
         if shimmer_count > 0 {
             s += &format!("{} Shimmers!\n", shimmer_count);
@@ -235,6 +277,12 @@ impl RollResult {
         let highest_effect = self.get_highest_effect();
         let highest_total = self.get_highest_total();
         match (highest_effect, highest_total) {
+            (FinalResult::Botch, _) => {
+                return "Internal error, disagreement on botch??".to_string();
+            }
+            (_, FinalResult::Botch) => {
+                return "Internal error, disagreement on botch??".to_string();
+            }
             (
                 FinalResult::Result {
                     total: etotal,
@@ -262,6 +310,7 @@ impl RollResult {
             .rolled_die
             .iter()
             .filter_map(|roll| match roll {
+                Roll::Glitch(_) => None,
                 Roll::Shimmer {
                     ultimate, value, ..
                 } => Some((*value, *ultimate)),
@@ -273,7 +322,7 @@ impl RollResult {
             .iter()
             .max_by_key(|(_, (value, die))| (die.sides(), -((*value) as i128)));
         let (effect_idx, effect) = match effect {
-            None => (0, Die::D4),
+            None => return FinalResult::Botch,
             Some((index, (_, die))) => (*index, *die),
         };
         if vals.len() < 3 {
@@ -295,6 +344,7 @@ impl RollResult {
 
     fn get_highest_total(&mut self) -> FinalResult {
         self.rolled_die.sort_by_key(|roll| match roll {
+            Roll::Glitch(_) => (0, 0),
             Roll::Shimmer {
                 ultimate, value, ..
             } => (*value, -(ultimate.sides() as i128)),
@@ -306,16 +356,21 @@ impl RollResult {
             .rev()
             .take(2)
             .filter_map(|roll| match roll {
+                Roll::Glitch(_) => None,
                 Roll::Value(v, _) => Some(*v),
                 Roll::Shimmer { value, .. } => Some(*value),
             })
             .sum();
+        if total == 0 {
+            return FinalResult::Botch;
+        }
         let effect = self
             .rolled_die
             .iter()
             .rev()
             .skip(2)
             .filter_map(|d| match d {
+                Roll::Glitch(_) => None,
                 Roll::Shimmer { ultimate, .. } => Some(*ultimate),
                 Roll::Value(_, die) => Some(*die),
             })
@@ -327,6 +382,7 @@ impl RollResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalResult {
+    Botch,
     Result { total: u64, effect: Die },
 }
 
