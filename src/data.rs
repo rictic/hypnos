@@ -144,9 +144,16 @@ impl Cost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_parse_low_traffic_channels_empty() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("LOW_TRAFFIC_CHANNELS");
         let channels = parse_low_traffic_channels();
         assert!(channels.is_empty());
@@ -154,6 +161,7 @@ mod tests {
 
     #[test]
     fn test_parse_low_traffic_channels_some() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("LOW_TRAFFIC_CHANNELS", "1, 2 ,3");
         let channels = parse_low_traffic_channels();
         assert_eq!(channels.len(), 3);

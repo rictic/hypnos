@@ -139,6 +139,21 @@ pub struct ImageRequest {
     quality: Quality,
 }
 impl ImageRequest {
+    pub fn new(
+        description: String,
+        num: u8,
+        dimensions: Dimensions,
+        style: Style,
+        quality: Quality,
+    ) -> Self {
+        Self {
+            description,
+            num,
+            dimensions,
+            style,
+            quality,
+        }
+    }
     pub fn cost(&self) -> Cost {
         // https://openai.com/pricing#:~:text=Other%20models-,Image%20models,-Build%20DALL%C2%B7E%20directly
         let base_cents = match (self.dimensions, self.quality) {

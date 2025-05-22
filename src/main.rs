@@ -1,8 +1,4 @@
-mod dalle;
-mod data;
-mod dice;
-mod info;
-mod sparkle;
+use hypnos::{dalle, data, dice, info, sparkle};
 use std::time::Duration;
 use poise::serenity_prelude as serenity;
 use poise::Event;
