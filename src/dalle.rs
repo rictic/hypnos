@@ -295,3 +295,42 @@ impl Image {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dimensions_to_size() {
+        assert_eq!(Dimensions::Square.to_size(), "1024x1024");
+        assert_eq!(Dimensions::Wide.to_size(), "1792x1024");
+        assert_eq!(Dimensions::Tall.to_size(), "1024x1792");
+    }
+
+    #[test]
+    fn test_quality_to_str() {
+        assert_eq!(Quality::Standard.to_str(), "standard");
+        assert_eq!(Quality::HD.to_str(), "hd");
+    }
+
+    #[test]
+    fn test_style_to_str() {
+        assert_eq!(Style::Natural.to_str(), "natural");
+        assert_eq!(Style::Vivid.to_str(), "vivid");
+    }
+
+    #[test]
+    fn test_image_request_cost() {
+        let req = ImageRequest {
+            description: "desc".to_string(),
+            num: 2,
+            dimensions: Dimensions::Square,
+            style: Style::Vivid,
+            quality: Quality::Standard,
+        };
+        let cost = req.cost();
+        let v = serde_json::to_value(cost).unwrap();
+        assert_eq!(v["millicents"], serde_json::json!(8000));
+        assert_eq!(req.num_images(), 2);
+    }
+}

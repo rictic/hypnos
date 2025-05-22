@@ -268,3 +268,71 @@ enum CortexResult {
     Botch,
     Result { total: u64, effect: Die },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_die_count_simple() {
+        assert_eq!(
+            DiceRollRequest::get_die_count("d6"),
+            Some((1, Die { sides: 6 }))
+        );
+    }
+
+    #[test]
+    fn test_get_die_count_number_only() {
+        assert_eq!(
+            DiceRollRequest::get_die_count("8"),
+            Some((1, Die { sides: 8 }))
+        );
+    }
+
+    #[test]
+    fn test_get_die_count_invalid() {
+        assert_eq!(DiceRollRequest::get_die_count("foo"), None);
+    }
+
+    #[test]
+    fn test_parse_too_many() {
+        let err = DiceRollRequest::parse("1000001d6");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_is_botch() {
+        let rr = RollResult {
+            rolled_die: vec![
+                Roll::Glitch(Die { sides: 6 }),
+                Roll::Glitch(Die { sides: 6 }),
+            ],
+        };
+        assert!(rr.is_botch());
+    }
+
+    #[test]
+    fn test_get_highest_effect_and_total() {
+        let mut rr = RollResult {
+            rolled_die: vec![
+                Roll::Value(1, Die { sides: 4 }),
+                Roll::Value(2, Die { sides: 6 }),
+                Roll::Value(3, Die { sides: 8 }),
+            ],
+        };
+        assert_eq!(
+            rr.get_highest_effect(),
+            CortexResult::Result {
+                total: 3,
+                effect: Die { sides: 8 }
+            }
+        );
+        assert_eq!(
+            rr.get_highest_total(),
+            CortexResult::Result {
+                total: 5,
+                effect: Die { sides: 4 }
+            }
+        );
+    }
+}
