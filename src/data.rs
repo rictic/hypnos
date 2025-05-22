@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::time::Instant;
 
 use poise::serenity_prelude as serenity;
 use tokio::sync::Mutex;
@@ -7,7 +9,15 @@ use crate::dalle::ImageRequest;
 
 // User data, which is stored and accessible in all command invocations
 pub struct Data {
-    accounts: Mutex<CostMap>,
+    pub accounts: Mutex<CostMap>,
+    pub low_traffic_channels: Vec<serenity::ChannelId>,
+    pub low_traffic_state: Mutex<LowTrafficState>,
+}
+
+#[derive(Default)]
+pub struct LowTrafficState {
+    pub messages: HashMap<serenity::ChannelId, Vec<Instant>>,
+    pub last_warned: HashMap<serenity::ChannelId, Instant>,
 }
 impl Data {
     pub async fn read_or_create() -> Result<Self, Error> {
@@ -15,6 +25,8 @@ impl Data {
         let cost_map = serde_json::from_str(&data).unwrap_or_default();
         Ok(Self {
             accounts: Mutex::new(cost_map),
+            low_traffic_channels: parse_low_traffic_channels(),
+            low_traffic_state: Mutex::new(LowTrafficState::default()),
         })
     }
 }
@@ -22,7 +34,20 @@ impl Default for Data {
     fn default() -> Self {
         Self {
             accounts: Mutex::new(BTreeMap::new()),
+            low_traffic_channels: parse_low_traffic_channels(),
+            low_traffic_state: Mutex::new(LowTrafficState::default()),
         }
+    }
+}
+
+fn parse_low_traffic_channels() -> Vec<serenity::ChannelId> {
+    match std::env::var("LOW_TRAFFIC_CHANNELS") {
+        Ok(var) => var
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .map(serenity::ChannelId)
+            .collect(),
+        Err(_) => Vec::new(),
     }
 }
 

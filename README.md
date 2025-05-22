@@ -22,6 +22,15 @@ To support DALL-E 3 image generation, also add your OpenAI API key to secrets.en
 export OPENAI_API_KEY=paste API key here
 ```
 
+### Low traffic channels
+
+If you have channels that are intended to stay quiet, list their IDs in the
+`LOW_TRAFFIC_CHANNELS` environment variable, separated by commas.
+
+```bash
+export LOW_TRAFFIC_CHANNELS=1234567890123456,9876543210987654
+```
+
 ### Prod
 
 To run the prod build, run ./run_prod.sh, which will kill any previous prod hypnos processes and start hypnos as a daemon logging to `nohup.out`, then tail that file in your current terminal. Quitting the tail will not stop hypnos.
