@@ -140,3 +140,40 @@ impl Cost {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_low_traffic_channels_empty() {
+        std::env::remove_var("LOW_TRAFFIC_CHANNELS");
+        let channels = parse_low_traffic_channels();
+        assert!(channels.is_empty());
+    }
+
+    #[test]
+    fn test_parse_low_traffic_channels_some() {
+        std::env::set_var("LOW_TRAFFIC_CHANNELS", "1, 2 ,3");
+        let channels = parse_low_traffic_channels();
+        assert_eq!(channels.len(), 3);
+        assert_eq!(channels[0].0, 1);
+        assert_eq!(channels[1].0, 2);
+        assert_eq!(channels[2].0, 3);
+        std::env::remove_var("LOW_TRAFFIC_CHANNELS");
+    }
+
+    #[test]
+    fn test_cost_cents() {
+        let c = Cost::cents(5);
+        assert_eq!(c.millicents, 5000);
+    }
+
+    #[test]
+    fn test_account_overdrafted() {
+        let acc = Account { user: String::new(), images: 0, credit: -1, total_cost: 0 };
+        assert!(acc.overdrafted());
+        let acc = Account { user: String::new(), images: 0, credit: 1, total_cost: 0 };
+        assert!(!acc.overdrafted());
+    }
+}
