@@ -103,7 +103,11 @@ pub async fn gen(
     Ok(())
 }
 
-const OPENAI_IMAGE_GEN_URL: &'static str = "https://api.openai.com/v1/images/generations";
+const DEFAULT_OPENAI_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
+
+fn openai_image_gen_url() -> String {
+    std::env::var("OPENAI_IMAGE_GEN_URL").unwrap_or_else(|_| DEFAULT_OPENAI_IMAGE_GEN_URL.to_string())
+}
 
 #[derive(Debug, serde::Deserialize, Clone)]
 struct OpenAIImages {
@@ -117,12 +121,12 @@ struct OpenAIImageData {
 }
 impl OpenAIImageData {}
 
-struct OpenAIImageGen {
+pub struct OpenAIImageGen {
     key: String,
 }
 
 impl OpenAIImageGen {
-    fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, String> {
         let key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| Err("missing OPENAI_API_KEY env variable".to_string()))?;
 
@@ -139,6 +143,22 @@ pub struct ImageRequest {
     quality: Quality,
 }
 impl ImageRequest {
+    pub fn new(
+        description: String,
+        num: u8,
+        dimensions: Dimensions,
+        style: Style,
+        quality: Quality,
+    ) -> Self {
+        Self {
+            description,
+            num,
+            dimensions,
+            style,
+            quality,
+        }
+    }
+
     pub fn cost(&self) -> Cost {
         // https://openai.com/pricing#:~:text=Other%20models-,Image%20models,-Build%20DALL%C2%B7E%20directly
         let base_cents = match (self.dimensions, self.quality) {
@@ -207,7 +227,7 @@ impl Quality {
 }
 
 impl OpenAIImageGen {
-    async fn create_image(
+    pub async fn create_image(
         &self,
         request: ImageRequest,
     ) -> Result<Vec<Result<Image, Error>>, Error> {
@@ -222,7 +242,7 @@ impl OpenAIImageGen {
             let task: tokio::task::JoinHandle<Result<Vec<Result<Image, Error>>, Error>> =
                 tokio::spawn(async move {
                     let response = client
-                        .post(OPENAI_IMAGE_GEN_URL)
+                        .post(openai_image_gen_url())
                         .bearer_auth(&key)
                         .json(&json!({
                             "model": "dall-e-3",
@@ -278,9 +298,10 @@ impl OpenAIImageGen {
     }
 }
 
-struct Image {
-    revised_prompt: Option<String>,
-    bytes: Vec<u8>,
+#[derive(Debug, Clone)]
+pub struct Image {
+    pub revised_prompt: Option<String>,
+    pub bytes: Vec<u8>,
 }
 
 impl Image {
