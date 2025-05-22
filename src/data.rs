@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use poise::serenity_prelude as serenity;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::dalle::ImageRequest;
@@ -8,13 +9,23 @@ use crate::dalle::ImageRequest;
 // User data, which is stored and accessible in all command invocations
 pub struct Data {
     accounts: Mutex<CostMap>,
+    pub low_traffic_channels: HashSet<serenity::ChannelId>,
+    traffic: Mutex<LowTrafficTracker>,
 }
 impl Data {
     pub async fn read_or_create() -> Result<Self, Error> {
         let data = std::fs::read_to_string("data.json").unwrap_or_else(|_| "{}".to_string());
         let cost_map = serde_json::from_str(&data).unwrap_or_default();
+        let channels_env = std::env::var("LOW_TRAFFIC_CHANNELS").unwrap_or_default();
+        let low_traffic_channels = channels_env
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .map(serenity::ChannelId)
+            .collect();
         Ok(Self {
             accounts: Mutex::new(cost_map),
+            low_traffic_channels,
+            traffic: Mutex::new(LowTrafficTracker::new()),
         })
     }
 }
@@ -22,11 +33,66 @@ impl Default for Data {
     fn default() -> Self {
         Self {
             accounts: Mutex::new(BTreeMap::new()),
+            low_traffic_channels: HashSet::new(),
+            traffic: Mutex::new(LowTrafficTracker::new()),
         }
     }
 }
 
 type CostMap = BTreeMap<u64, Account>;
+
+struct ChannelTraffic {
+    messages: VecDeque<Instant>,
+    last_warn: Option<Instant>,
+}
+
+impl ChannelTraffic {
+    fn new() -> Self {
+        Self {
+            messages: VecDeque::new(),
+            last_warn: None,
+        }
+    }
+}
+
+pub struct LowTrafficTracker {
+    map: HashMap<u64, ChannelTraffic>,
+}
+
+impl LowTrafficTracker {
+    pub fn new() -> Self {
+        Self { map: HashMap::new() }
+    }
+
+    /// Records a message in the given channel. Returns true if a warning should be sent.
+    pub fn record(&mut self, channel_id: u64) -> bool {
+        let now = Instant::now();
+        let entry = self
+            .map
+            .entry(channel_id)
+            .or_insert_with(ChannelTraffic::new);
+        entry.messages.push_back(now);
+        while let Some(&front) = entry.messages.front() {
+            if now.duration_since(front) > Duration::from_secs(5 * 60) {
+                entry.messages.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if entry.messages.len() > 3 {
+            match entry.last_warn {
+                Some(t) if now.duration_since(t) < Duration::from_secs(5 * 60) => false,
+                _ => {
+                    entry.last_warn = Some(now);
+                    true
+                }
+            }
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Account {
