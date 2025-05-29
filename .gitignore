@@ -4,3 +4,4 @@
 secrets.env
 nohup.out
 /image*.png
+/result

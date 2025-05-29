@@ -1,0 +1,22 @@
+name: Nix Build and Test
+
+on:
+  push:
+    branches: [ "main" ] # Or your default branch
+  pull_request:
+    branches: [ "main" ] # Or your default branch
+
+jobs:
+  build-and-test-with-nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v4 # Using v4, check for latest if preferred
+
+      - name: Build hypnos binary with Nix
+        run: nix build .#hypnos
+
+      - name: Run tests with Nix
+        run: nix flake check
