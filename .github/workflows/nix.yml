@@ -1,0 +1,19 @@
+name: Nix
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v8
+      - name: Build with nix
+        run: nix build
+      - name: Run tests in nix shell
+        run: nix develop -c cargo test --verbose
